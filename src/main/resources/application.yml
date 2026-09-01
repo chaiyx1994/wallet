@@ -1,0 +1,27 @@
+spring:
+  application:
+    name: wallet
+  datasource:
+    url: jdbc:h2:mem:wallet;DB_CLOSE_DELAY=-1;MODE=MySQL
+    driver-class-name: org.h2.Driver
+    username: sa
+    password:
+  jpa:
+    hibernate:
+      ddl-auto: update
+    show-sql: false
+    database-platform: org.hibernate.dialect.H2Dialect
+  h2:
+    console:
+      enabled: true
+      path: /h2-console
+
+wallet:
+  enc-secret: ${WALLET_ENC_SECRET:default-32-byte-secret-key-must-be}
+  chain:
+    bitcoin-network: test
+
+logging:
+  level:
+    org.hibernate.SQL: WARN
+    com.wallet: INFO
