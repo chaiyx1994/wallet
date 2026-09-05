@@ -19,6 +19,8 @@ spring:
 wallet:
   enc-secret: ${WALLET_ENC_SECRET:default-32-byte-secret-key-must-be}
   chain:
+    evm-rpc-url: ${EVM_RPC_URL:https://sepolia.infura.io/v3/your-project-id}
+    evm-chain-id: ${EVM_CHAIN_ID:11155111}
     bitcoin-network: test
 
 logging:
