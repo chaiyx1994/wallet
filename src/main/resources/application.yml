@@ -2,7 +2,7 @@ spring:
   application:
     name: wallet
   datasource:
-    url: jdbc:h2:mem:wallet;DB_CLOSE_DELAY=-1;MODE=MySQL
+    url: jdbc:h2:file:./data/wallet;DB_CLOSE_DELAY=-1;MODE=MySQL
     driver-class-name: org.h2.Driver
     username: sa
     password:
@@ -22,6 +22,11 @@ wallet:
     evm-rpc-url: ${EVM_RPC_URL:https://sepolia.infura.io/v3/your-project-id}
     evm-chain-id: ${EVM_CHAIN_ID:11155111}
     bitcoin-network: test
+  scanner:
+    enabled: true                          # 扫链模块开关
+    tick-interval-ms: 10000                # 主循环 tick 间隔（ms），ETH 出块 ~12s 所以设 10s
+    safe-confirmations: 12                 # 安全确认阈值，主网建议 12-32
+    start-from-block: -1                   # 启动时起始块：-1=从链头实时扫，>=0=从指定历史块补扫
 
 logging:
   level:

@@ -17,9 +17,9 @@ import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.locks.ReentrantLock;
 
 /**
- * 提现服务（策略模式路由层）
- * 链特有的 nonce/UTXO/签名/广播全部下沉到 ChainAdapter.executeWithdrawal
- * 这里只做通用编排：参数校验 → 加锁 → 余额校验 → 调用 adapter → 失败兜底
+ * 提现服务（模板方法模式 + 策略路由）
+ * 参数校验 + 进程内地址锁 + 创建 Transaction 基础字段 + 失败兜底
+ * 链特有流程（余额校验/构建签名/广播）由 AbstractChainAdapter 模板方法统一编排
  */
 @Service
 public class WithdrawalService {
@@ -64,20 +64,7 @@ public class WithdrawalService {
         ReentrantLock lock = addressLocks.computeIfAbsent(wallet.getAddress(), k -> new ReentrantLock());
         lock.lock();
         try {
-            // ── 3. 链上余额校验（通用，所有链都有余额查询） ──
-            BigDecimal onChainBalance;
-            try {
-                onChainBalance = adapter.getBalance(wallet.getAddress());
-            } catch (Exception e) {
-                log.warn("链上余额查询失败 wallet={} err={}, 跳过链上校验", wallet.getAddress(), e.getMessage());
-                onChainBalance = BigDecimal.valueOf(Long.MAX_VALUE);  // 降级放行，依赖后续广播失败兜底
-            }
-            if (onChainBalance.compareTo(request.getAmount()) < 0) {
-                log.warn("余额不足 wallet={} onChain={} need={}", wallet.getAddress(), onChainBalance, request.getAmount());
-                throw new IllegalStateException("链上余额不足: 可用 " + onChainBalance + ", 需 " + request.getAmount());
-            }
-
-            // ── 4. 创建 Transaction 实体（基础字段，策略方法会补充 nonce/txHash/gasFee） ──
+            // ── 3. 创建 Transaction 基础字段 ──
             Transaction tx = new Transaction();
             tx.setWallet(wallet);
             tx.setChainType(wallet.getChainType());
@@ -86,12 +73,12 @@ public class WithdrawalService {
             tx.setAmount(request.getAmount());
 
             try {
-                // ── 5. 策略方法：链特有流程（nonce → 签名 → 构造 → 广播 → 写回 DB） ──
+                // ── 4. 模板方法：余额校验 → 构建签名 → 广播 → 写回 DB ──
                 adapter.executeWithdrawal(tx, wallet, request);
                 return transactionRepository.findById(tx.getId())
                         .orElseThrow(() -> new IllegalStateException("交易持久化异常"));
             } catch (Exception e) {
-                // ── 6. 广播失败兜底：标记 FAILED + failReason ──
+                // ── 5. 失败兜底：标记 FAILED + failReason ──
                 log.error("提现广播失败 wallet={} err={}", wallet.getAddress(), e.getMessage());
                 if (tx.getId() != null) {
                     tx.setStatus(TransactionStatus.FAILED);

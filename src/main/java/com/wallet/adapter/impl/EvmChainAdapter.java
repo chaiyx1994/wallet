@@ -1,6 +1,6 @@
 package com.wallet.adapter.impl;
 
-import com.wallet.adapter.ChainAdapter;
+import com.wallet.adapter.AbstractChainAdapter;
 import com.wallet.crypto.AesGcmEncryptor;
 import com.wallet.dto.WithdrawRequest;
 import com.wallet.entity.Transaction;
@@ -12,7 +12,6 @@ import com.wallet.repository.TransactionRepository;
 import com.wallet.repository.WalletRepository;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
-import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Component;
 import org.web3j.crypto.Credentials;
 import org.web3j.crypto.ECKeyPair;
@@ -27,45 +26,35 @@ import org.web3j.protocol.core.methods.response.EthGetTransactionCount;
 import org.web3j.protocol.core.methods.response.EthGetTransactionReceipt;
 import org.web3j.protocol.core.methods.response.EthSendTransaction;
 import org.web3j.protocol.core.methods.response.TransactionReceipt;
-import org.web3j.protocol.http.HttpService;
 import org.web3j.utils.Numeric;
 
-import javax.annotation.PostConstruct;
 import java.math.BigDecimal;
 import java.math.BigInteger;
 import java.math.RoundingMode;
 import java.util.Optional;
 
 /**
- * EVM 链适配器（生产版，默认激活）
- * 策略模式实现：createWallet + executeWithdrawal
+ * EVM 链适配器（模板方法实现）
+ * 继承 AbstractChainAdapter，只需实现 buildRawTransaction + override hook
+ *
+ * Web3j 统一由 ScannerConfig 注册 Bean，EvmChainAdapter 和 DepositScanner 共用同一实例
  */
 @Component
-public class EvmChainAdapter implements ChainAdapter {
+public class EvmChainAdapter extends AbstractChainAdapter {
 
     private static final Logger log = LoggerFactory.getLogger(EvmChainAdapter.class);
 
-    private final String rpcUrl;
+    private final Web3j web3j;
     private final AesGcmEncryptor encryptor;
-    private final WalletRepository walletRepository;
-    private final TransactionRepository transactionRepository;
 
-    private Web3j web3j;
-
-    public EvmChainAdapter(@Value("${wallet.chain.evm-rpc-url}") String rpcUrl,
+    public EvmChainAdapter(Web3j web3j,
                            AesGcmEncryptor encryptor,
                            WalletRepository walletRepository,
                            TransactionRepository transactionRepository) {
-        this.rpcUrl = rpcUrl;
+        super(walletRepository, transactionRepository);
+        this.web3j = web3j;
         this.encryptor = encryptor;
-        this.walletRepository = walletRepository;
-        this.transactionRepository = transactionRepository;
-    }
-
-    @PostConstruct
-    public void init() {
-        this.web3j = Web3j.build(new HttpService(rpcUrl));
-        log.info("EvmChainAdapter initialized with rpc={}", rpcUrl);
+        log.info("EvmChainAdapter initialized (Web3j injected)");
     }
 
     // ──────────────────────── ChainAdapter 通用方法 ────────────────────────
@@ -146,11 +135,8 @@ public class EvmChainAdapter implements ChainAdapter {
         return 6;
     }
 
-    // ──────────────────────── 策略1：createWallet ────────────────────────
+    // ──────────────────────── createWallet ────────────────────────
 
-    /**
-     * 生成 EVM 密钥对 → 派生 0x 地址 → 加密私钥 → 保存 DB
-     */
     @Override
     public Wallet createWallet(WalletType walletType) {
         ECKeyPair ecKeyPair;
@@ -177,34 +163,24 @@ public class EvmChainAdapter implements ChainAdapter {
         return saved;
     }
 
-    // ──────────────────────── 策略2：executeWithdrawal ────────────────────────
+    // ──────────────────────── 模板方法钩子实现 ────────────────────────
 
-    /**
-     * EVM 提现全流程：
-     *   1. 查 nonce → max(链上, DB已分配) + 1
-     *   2. 解密私钥 → Credentials
-     *   3. 构造 RawTransaction → 签名
-     *   4. 广播
-     *   5. 写回 DB：wallet.nonce, tx.txHash, tx.gasFee, tx.status
-     *
-     * 调用前 Service 层已经做了：钱包存在校验、地址格式校验、链上余额校验、进程内加锁
-     */
     @Override
-    public String executeWithdrawal(Transaction tx, Wallet wallet, WithdrawRequest request) {
-        // 1. nonce 分配
+    protected String buildRawTransaction(Transaction tx, Wallet wallet, WithdrawRequest request) {
+        // 1. nonce：取链上和 DB 已分配的较大值 + 1
         long onChainNonce = getNonce(wallet.getAddress());
-        int dbAllocatedNonce = wallet.getNonce();
-        long nextNonce = Math.max(onChainNonce, dbAllocatedNonce) + 1;
+        long nextNonce = Math.max(onChainNonce, wallet.getNonce()) + 1;
+        tx.setNonce((int) nextNonce);
 
-        // 2. 解密私钥 → 签名凭证
+        // 2. 解密私钥 → Credentials
         String decrypted = encryptor.decrypt(wallet.getEncryptedPrivateKey());
         BigInteger privateKey = new BigInteger(decrypted, 16);
         ECKeyPair ecKeyPair = ECKeyPair.create(privateKey);
         Credentials credentials = Credentials.create(ecKeyPair);
 
-        // 3. 构造交易参数
+        // 3. 构造交易参数（ETH → wei）
         BigInteger value = request.getAmount()
-                .multiply(BigDecimal.TEN.pow(18))  // ETH → wei
+                .multiply(BigDecimal.TEN.pow(18))
                 .toBigInteger();
         BigInteger gasLimit = request.getGasLimit() != null
                 ? request.getGasLimit().toBigInteger()
@@ -218,28 +194,21 @@ public class EvmChainAdapter implements ChainAdapter {
                 BigInteger.valueOf(nextNonce), gasPrice, gasLimit,
                 request.getToAddress(), value);
         byte[] signedMessage = TransactionEncoder.signMessage(rawTx, credentials);
-        String rawTxHex = Numeric.toHexString(signedMessage);
 
-        // 5. 广播前先写入 nonce 和 PENDING 状态（RPC 可能耗时较长）
-        wallet.setNonce((int) nextNonce);
-        walletRepository.save(wallet);
-
-        tx.setNonce((int) nextNonce);
-        tx.setStatus(TransactionStatus.PENDING);
-        transactionRepository.save(tx);
-
-        // 6. 广播
-        String hash = broadcastTransaction(rawTxHex, wallet.getAddress());
-
-        // 7. 广播成功：更新 txHash + gasFee + BROADCASTED
-        tx.setTxHash(hash);
-        tx.setStatus(TransactionStatus.BROADCASTED);
+        // 5. 顺手算好 gasFee 塞到 tx（广播不影响 gas 费，提前算安全）
         tx.setGasFee(new BigDecimal(gasPrice.multiply(gasLimit))
                 .divide(BigDecimal.TEN.pow(18), 18, RoundingMode.HALF_UP));
-        transactionRepository.save(tx);
 
-        log.info("[EVM] Withdrawal broadcasted wallet={} hash={} nonce={} amount={}",
-                wallet.getAddress(), hash, nextNonce, request.getAmount());
-        return hash;
+        return Numeric.toHexString(signedMessage);
+    }
+
+    /** 广播前：更新 wallet nonce + tx PENDING（RPC 可能耗时较长） */
+    @Override
+    protected void preBroadcast(Transaction tx, Wallet wallet) {
+        wallet.setNonce(tx.getNonce());
+        walletRepository.save(wallet);
+
+        tx.setStatus(TransactionStatus.PENDING);
+        transactionRepository.save(tx);
     }
 }
