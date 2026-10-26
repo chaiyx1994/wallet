@@ -27,15 +27,12 @@ public class WalletService {
     }
 
     /**
-     * 创建新钱包（策略模式）
-     * 当前只支持 EVM 链，其他链后续补齐生产适配器后放开
+     * 创建新钱包（策略模式，ChainAdapterFactory 按链路由）
+     * 当前支持：EVM、BTC（Solana 待补 SolanaChainAdapter）
      */
     @Transactional
     public Wallet createWallet(CreateWalletRequest request) {
         ChainType chainType = request.getChainType();
-        if (chainType != ChainType.EVM) {
-            throw new IllegalArgumentException("当前只支持 EVM 链钱包创建，收到: " + chainType);
-        }
         WalletType walletType = WalletType.valueOf(request.getWalletType());
         return adapterFactory.getAdapter(chainType).createWallet(walletType);
     }

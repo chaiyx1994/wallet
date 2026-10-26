@@ -21,12 +21,17 @@ wallet:
   chain:
     evm-rpc-url: ${EVM_RPC_URL:https://sepolia.infura.io/v3/your-project-id}
     evm-chain-id: ${EVM_CHAIN_ID:11155111}
-    bitcoin-network: test
+    btc-network: ${BTC_NETWORK:mainnet}      # mainnet | testnet
+    btc-blockstream-url: ${BTC_BLOCKSTREAM_URL:https://blockstream.info/api}
   scanner:
-    enabled: true                          # 扫链模块开关
-    tick-interval-ms: 10000                # 主循环 tick 间隔（ms），ETH 出块 ~12s 所以设 10s
-    safe-confirmations: 12                 # 安全确认阈值，主网建议 12-32
-    start-from-block: -1                   # 启动时起始块：-1=从链头实时扫，>=0=从指定历史块补扫
+    enabled: true                          # 扫链模块开关（EVM）
+    tick-interval-ms: 10000                # EVM tick 间隔（出块 ~12s 所以 10s 合适）
+    safe-confirmations: 12                 # EVM 安全确认阈值
+    start-from-block: -1
+    btc:
+      enabled: false                       # BTC 扫链默认关闭，需要时显式开启
+      tick-interval-ms: 30000              # BTC 出块 ~10min，30s tick 足够
+      safe-confirmations: 3                # BTC 保守 3 个 ≈ 30min
 
 logging:
   level:
